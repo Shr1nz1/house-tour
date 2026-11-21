@@ -1,0 +1,10 @@
+装修资源包授权说明
+
+Poly Haven 素材：CC0 1.0，来源 https://polyhaven.com/license
+ambientCG 素材：CC0 1.0，来源 https://docs.ambientcg.com/license/
+Sweet Home 3D 的 BlendSwap-CC-0 家具库：官方标注 Public domain，来源 https://www.sweethome3d.com/import-models/
+Blender Agent Skills：MIT，完整许可证见 06_技能源码与许可/blender-skills-main/LICENSE
+Interior Design Expert：MIT，完整许可证见 06_技能源码与许可/interior-design-expert-LICENSE.txt
+Pannellum：以下载包内的许可证为准，完整保留在 05_全景展示 中。
+
+每项下载来源和文件校验信息另见 07_清单与说明。模型和材质可用于修改及分享装修展示。付费素材和需要登录授权的素材未纳入本包。

@@ -1,0 +1,4 @@
+Poly Haven CC0：现代餐椅 dining_chair_02、现代玻璃吊灯 modern_ceiling_lamp_01、花瓶 ceramic_vase_01 / ceramic_vase_02、盆栽 potted_plant_01、橡木地板 oak_wood_planks、浅橡木 oak_veneer_03、白橡木 white_oak_veneer、环境光 autumn_field_puresky。
+Sweet Home BlendSwap CC0：床与床品基础模型。
+新增织物材质 Fabric082A / Fabric036 为 ambientCG CC0。其余原户型基础模型沿用v2；原始版权与许可保留在本包的“原户型基础模型”子目录。
+全景查看器 Pannellum 2.5.7，许可随包保留。
