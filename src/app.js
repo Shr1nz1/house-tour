@@ -4,6 +4,13 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
 import {MeshoptDecoder} from 'three/addons/libs/meshopt_decoder.module.js';
+import {HDRLoader} from 'three/addons/loaders/HDRLoader.js';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+import {GTAOPass} from 'three/addons/postprocessing/GTAOPass.js';
+import {ShaderPass} from 'three/addons/postprocessing/ShaderPass.js';
+import {FXAAShader} from 'three/addons/shaders/FXAAShader.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
 const $=s=>document.querySelector(s), canvas=$('#view');
 const doorInfo={
@@ -22,7 +29,38 @@ const rooms={
 };
 let renderer,scene,camera,controls,model,mixer,ready=false,overview=false,yaw=0,pitch=0,drag=null,moving=null,focusDoor='Door_Master';
 const doors={},raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();let previousTime=performance.now();
-let ceilingParts=[],hits=[];
+let ceilingParts=[],hits=[],composer,contactAO,fxaa,quality='detail';
+// Transparent glazing and sheer fabric must not become opaque AO occluders.
+class InteriorContactPass extends GTAOPass{
+ _overrideVisibility(){
+  super._overrideVisibility();
+  this.scene.traverse(o=>{
+   if(!o.isMesh||!o.visible)return;
+   const materials=Array.isArray(o.material)?o.material:[o.material];
+   if(materials.every(m=>m?.transparent&&m.opacity<.7)){
+    o.visible=false;this._visibilityCache.push(o);
+   }
+  });
+ }
+}
+function sizeView(){
+ if(!renderer)return;const r=canvas.getBoundingClientRect();
+ const dpr=Math.min(devicePixelRatio,quality==='detail'?1.5:1.1);
+ renderer.setPixelRatio(dpr);renderer.setSize(r.width,r.height,false);
+ camera.aspect=r.width/r.height;camera.updateProjectionMatrix();
+ composer.setPixelRatio(dpr);composer.setSize(r.width,r.height);
+ contactAO.setSize(Math.max(1,Math.round(r.width*dpr*.7)),Math.max(1,Math.round(r.height*dpr*.7)));
+ fxaa.material.uniforms.resolution.value.set(1/(r.width*dpr),1/(r.height*dpr));
+ navDirty=true;viewDirty=true;
+}
+function chooseQuality(value){
+ quality=value;contactAO.enabled=value==='detail';
+ for(const b of document.querySelectorAll('[data-quality]'))b.setAttribute('aria-pressed',String(b.dataset.quality===value));
+ $('#qualityNote').textContent=value==='detail'?'细腻阴影与材质层次':'优先保持操作流畅';
+ try{localStorage.setItem('house-quality-v6',value);}catch{}
+ sizeView();if(renderer)renderer.shadowMap.needsUpdate=true;
+}
+let viewDirty=true;
 let currentRoom='dining',journey=null,navDirty=true,lastNavAt=0;
 const portals=new Map(),portalLayer=document.createElement('div');portalLayer.id='doorPortals';canvas.parentElement.append(portalLayer);
 const backToDoor=document.createElement('button');backToDoor.id='backToDoor';backToDoor.type='button';backToDoor.hidden=true;canvas.parentElement.append(backToDoor);
@@ -48,16 +86,16 @@ function setDoor(id,open,focus=false){
  if(!ready||journey)return;
  if(focus&&!overview)goDoor(id);
  const d=doors[id];d.start=d.t;d.target=open?d.duration:0;d.elapsed=0;d.moving=true;updateButtons();
- message(doorInfo[id].label+(open?'正在打开…':'正在关闭…'));document.body.classList.remove('menu-open');navDirty=true;
+ message(doorInfo[id].label+(open?'正在打开…':'正在关闭…'));document.body.classList.remove('menu-open');navDirty=true;viewDirty=true;
 }
 function toggleDoor(id){if(doors[id])setDoor(id,doors[id].target===0,true);}
 function lookAtPoint(target){
  camera.lookAt(new THREE.Vector3(...target));const d=new THREE.Vector3();camera.getWorldDirection(d);yaw=Math.atan2(d.x,d.z);pitch=Math.asin(d.y);
 }
-function setCeiling(show){for(const o of ceilingParts)o.visible=show;}
+function setCeiling(show){let changed=false;for(const o of ceilingParts){if(o.visible!==show)changed=true;o.visible=show;}if(changed){renderer.shadowMap.needsUpdate=true;viewDirty=true;}}
 function goIndoor(pos,target,title,doorId=null,space=null){
  document.body.classList.remove('menu-open');
- overview=false;moving=null;journey=null;controls.enabled=false;navDirty=true;
+ overview=false;moving=null;journey=null;controls.enabled=false;navDirty=true;viewDirty=true;
  if(space)currentRoom=space;else{const selected=Object.entries(rooms).find(([,r])=>r.name===title);if(selected)currentRoom=selected[0];}setCeiling(true);camera.fov=72;camera.updateProjectionMatrix();camera.position.set(...pos);lookAtPoint(target);
  $('#viewTitle').textContent=title;$('#modeTag').textContent='室内漫游';$('#hint').textContent=doorId?'点门打开 · 开门后点「进入」穿过门口':(Object.values(ROUTES).some(r=>r.room===currentRoom)?'拖动画面看四周 · 点「看门口」可返回':'拖动画面环视 · 可切换房间或查看房门');focusDoor=doorId;
  document.querySelectorAll('[data-room]').forEach(b=>b.classList.toggle('active',rooms[b.dataset.room].name===title));
@@ -67,27 +105,41 @@ function goIndoor(pos,target,title,doorId=null,space=null){
 }
 function goDoor(id){const r=ROUTES[id],inside=currentRoom===r.room;const pos=inside?r.insidePosition:r.outsidePosition;goIndoor(pos,r.center,r.name+'门口',id,inside?r.room:r.outside);message(canPassDoor(doors[id])?'房门已开，点击「'+crossing(id,currentRoom).label+'」继续':'点击房门打开，再点「进入」前往下一空间');}
 function goOverview(){
- if(!ready||journey)return;document.body.classList.remove('menu-open');overview=true;navDirty=true;syncBackButton();moving=null;setCeiling(false);controls.enabled=true;camera.fov=43;camera.updateProjectionMatrix();camera.position.set(12.2,16.8,17.1);controls.target.set(3.45,.65,5.14);controls.update();
+ if(!ready||journey)return;document.body.classList.remove('menu-open');overview=true;navDirty=true;viewDirty=true;syncBackButton();moving=null;setCeiling(false);controls.enabled=true;camera.fov=43;camera.updateProjectionMatrix();camera.position.set(12.2,16.8,17.1);controls.target.set(3.45,.65,5.14);controls.update();
  $('#viewTitle').textContent='全屋鸟瞰';$('#modeTag').textContent='整体布局';$('#hint').textContent='拖动旋转户型 · 滚轮拉近 · 点击门开关';$('#overview').classList.add('active');
  document.querySelectorAll('[data-room],[data-focus]').forEach(b=>b.classList.remove('active'));message('顶面已收起，可查看三扇门的开启占位');
 }
 function init(){
- renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance'});
- renderer.setPixelRatio(Math.min(devicePixelRatio,1.75));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.0;
- renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFShadowMap;
+ renderer=new THREE.WebGLRenderer({canvas,antialias:false,powerPreference:'high-performance'});
+ renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=.92;
+ renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFShadowMap;renderer.shadowMap.autoUpdate=false;renderer.shadowMap.needsUpdate=true;
  scene=new THREE.Scene();scene.background=new THREE.Color('#e8e2d9');
- camera=new THREE.PerspectiveCamera(72,1,.025,80);
+ camera=new THREE.PerspectiveCamera(72,1,.035,50);
  controls=new OrbitControls(camera,canvas);controls.enableDamping=true;controls.minDistance=2;controls.maxDistance=35;controls.maxPolarAngle=Math.PI*.48;controls.enabled=false;
- const pmrem=new THREE.PMREMGenerator(renderer);const env=new RoomEnvironment();scene.environment=pmrem.fromScene(env,.04).texture;scene.environmentIntensity=.45;env.dispose();pmrem.dispose();
- scene.add(new THREE.HemisphereLight(0xfffaf0,0xb6a58b,1.45));
- const sun=new THREE.DirectionalLight(0xfff4df,2.1);sun.position.set(1,12,-3);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-9;sun.shadow.camera.right=9;sun.shadow.camera.top=10;sun.shadow.camera.bottom=-10;sun.shadow.camera.near=.1;sun.shadow.camera.far=30;sun.shadow.bias=-.00025;sun.shadow.normalBias=.008;sun.target.position.set(3.4,0,5);scene.add(sun,sun.target);
- for(const [x,z,p] of [[1.7,5.3,13],[5.3,3.4,13],[5.7,6.4,13],[5.5,9.0,11],[2.6,9.0,7],[4.0,8.6,5],[5.0,.7,5]]){
-  const light=new THREE.PointLight(0xfff0d6,p,5,2);light.position.set(x,2.4,z);scene.add(light);
+ const pmrem=new THREE.PMREMGenerator(renderer),env=new RoomEnvironment();
+ let environmentTarget=pmrem.fromScene(env,.04);scene.environment=environmentTarget.texture;scene.environmentIntensity=.45;env.dispose();
+ new HDRLoader().load('./assets/environment-v6.hdr',texture=>{
+  texture.mapping=THREE.EquirectangularReflectionMapping;
+  const next=pmrem.fromEquirectangular(texture);environmentTarget.dispose();environmentTarget=next;scene.environment=next.texture;
+  viewDirty=true;scene.environmentRotation.y=THREE.MathUtils.degToRad(35);texture.dispose();pmrem.dispose();
+ },undefined,()=>{pmrem.dispose();});
+ scene.add(new THREE.HemisphereLight(0xfffaf2,0xb6a388,.68));
+ const sun=new THREE.DirectionalLight(0xfff5e4,1.65);sun.position.set(1,12,-3);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.camera.left=-7;sun.shadow.camera.right=7;sun.shadow.camera.top=8;sun.shadow.camera.bottom=-8;sun.shadow.camera.near=.1;sun.shadow.camera.far=30;sun.shadow.bias=-.00015;sun.shadow.normalBias=.025;sun.shadow.radius=2;sun.shadow.blurSamples=8;sun.target.position.set(3.4,0,5);scene.add(sun,sun.target);
+ for(const [id,x,y,z,power]of [['master',1.7,2.45,5.3,17],['second',5.3,2.45,3.4,17],['dining',5.65,2.20,6.5,19],['kitchen',5.5,2.45,9,17],['bath',2.6,2.45,9,12],['entry',4,2.45,8.6,9],['balcony',5,2.45,.7,8]]){
+  const light=new THREE.SpotLight(0xffedda,power,5,1.35,.95,2);light.position.set(x,y,z);light.target.position.set(x,0,z);scene.add(light,light.target);
  }
- new ResizeObserver(()=>{const r=canvas.getBoundingClientRect();renderer.setSize(r.width,r.height,false);camera.aspect=r.width/r.height;camera.updateProjectionMatrix();navDirty=true;}).observe(canvas);
+ composer=new EffectComposer(renderer);composer.addPass(new RenderPass(scene,camera));
+ contactAO=new InteriorContactPass(scene,camera,512,512);contactAO.blendIntensity=.85;
+ contactAO.updateGtaoMaterial({radius:.24,distanceExponent:1,thickness:.11,distanceFallOff:1,scale:1,samples:16});
+ contactAO.updatePdMaterial({samples:8,radius:6,rings:2,lumaPhi:10,depthPhi:2,normalPhi:4});composer.addPass(contactAO);
+ fxaa=new ShaderPass(FXAAShader);composer.addPass(fxaa);composer.addPass(new OutputPass());
+ let initialQuality=matchMedia('(pointer:coarse)').matches?'smooth':'detail';try{initialQuality=localStorage.getItem('house-quality-v6')||initialQuality;}catch{}
+ chooseQuality(initialQuality==='smooth'?'smooth':'detail');
+ document.querySelectorAll('[data-quality]').forEach(b=>b.onclick=()=>chooseQuality(b.dataset.quality));
+ new ResizeObserver(sizeView).observe(canvas);
  const loader=new GLTFLoader();loader.setMeshoptDecoder(MeshoptDecoder);
  $('#loadingText').textContent='正在准备房间与可开关的门…';
- loader.load('./assets/apartment-doors.glb',gltf=>{
+ loader.load('./assets/apartment-doors-v6.glb',gltf=>{
   model=gltf.scene;scene.add(model);mixer=new THREE.AnimationMixer(model);
   model.traverse(o=>{
    if(o.name.startsWith('Ceiling_'))ceilingParts.push(o);
@@ -104,7 +156,7 @@ function init(){
    doors[id]={node,action,duration:clip.duration,t:0,target:0,moving:false};
    node.traverse(o=>{if(o.isMesh)o.userData.doorId=id;});
   }
-  mixer.update(0);ready=true;document.querySelectorAll('[data-needs-model]').forEach(b=>b.disabled=false);$('#loading').hidden=true;
+  mixer.update(0);renderer.shadowMap.needsUpdate=true;ready=true;document.querySelectorAll('[data-needs-model]').forEach(b=>b.disabled=false);$('#loading').hidden=true;
   goDoor('Door_Master');updateButtons();message('房屋已就绪 · 点门打开，再点击进入房间');animate();
  },progress=>{const mb=(progress.loaded/1048576).toFixed(1);$('#loadingText').textContent='正在载入三维房屋… '+mb+' MB';},err=>{console.error(err);$('#loadingText').textContent='三维画面加载失败，请关闭页面后重新打开。';$('#loading').classList.add('error');});
 }
@@ -112,16 +164,16 @@ function animate(){
  requestAnimationFrame(animate);const now=performance.now();const dt=Math.min((now-previousTime)/1000,.05);previousTime=now;let any=false;
  for(const [id,d] of Object.entries(doors)){
   if(d.moving){d.elapsed+=dt;const u=Math.min(d.elapsed/.95,1);const eased=u*u*(3-2*u);d.t=d.start+(d.target-d.start)*eased;d.action.time=d.t;
-   if(u===1){d.moving=false;navDirty=true;message(doorInfo[id].label+(d.target?'已打开':'已关闭'));updateButtons();}
+   if(u===1){d.moving=false;navDirty=true;viewDirty=true;message(doorInfo[id].label+(d.target?'已打开':'已关闭'));updateButtons();}
    any=true;
   }
  }
- if(any)mixer.update(0);
+ if(any){mixer.update(0);renderer.shadowMap.needsUpdate=true;}
  if(journey){
   const trip=journey;trip.elapsed+=dt;const raw=Math.min(trip.elapsed/trip.duration,1),u=raw*raw*(3-2*raw);camera.position.copy(trip.curve.getPoint(u));camera.quaternion.slerpQuaternions(trip.startRotation,trip.endRotation,u);
   if(raw===1){journey=null;goIndoor(trip.end,trip.target,rooms[trip.destination].name,null,trip.destination);message('已'+trip.label+(Object.values(ROUTES).some(r=>r.room===trip.destination)?' · 拖动画面环视，点「看门口」可返回':' · 可继续打开其他房门'));}
  }
- if(overview)controls.update();updatePortals(now);renderer.render(scene,camera);
+ const orbitChanged=overview&&controls.update();updatePortals(now);if(any||journey||orbitChanged||viewDirty){composer.render(dt);viewDirty=false;}
 }
 function hitDoor(e){
  const r=canvas.getBoundingClientRect();pointer.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);raycaster.setFromCamera(pointer,camera);
@@ -133,12 +185,12 @@ canvas.addEventListener('pointerdown',e=>{if(!ready||journey)return;drag={x:e.cl
 canvas.addEventListener('pointermove',e=>{
  if(!ready||journey)return;
  if(drag){const dx=e.clientX-drag.lastX,dy=e.clientY-drag.lastY;drag.lastX=e.clientX;drag.lastY=e.clientY;if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>5)drag.moved=true;
-  if(!overview&&drag.moved){navDirty=true;yaw-=dx*.004;pitch=THREE.MathUtils.clamp(pitch-dy*.004,-1.25,1.25);camera.lookAt(camera.position.clone().add(new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch))));}
+  if(!overview&&drag.moved){navDirty=true;viewDirty=true;yaw-=dx*.004;pitch=THREE.MathUtils.clamp(pitch-dy*.004,-1.25,1.25);camera.lookAt(camera.position.clone().add(new THREE.Vector3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch))));}
  }else canvas.style.cursor=hitDoor(e)?'pointer':(overview?'grab':'move');
 });
 canvas.addEventListener('pointerup',e=>{if(drag&&!drag.moved&&!journey){const portal=hitPassage(e),id=hitDoor(e);if(portal)traverseDoor(portal);else if(id){if(canPassDoor(doors[id])&&routeAvailable(id,currentRoom))traverseDoor(id);else toggleDoor(id);}}drag=null;});
 canvas.addEventListener('pointercancel',()=>drag=null);
-canvas.addEventListener('wheel',e=>{if(overview||!ready||journey)return;e.preventDefault();navDirty=true;camera.fov=THREE.MathUtils.clamp(camera.fov+e.deltaY*.025,38,90);camera.updateProjectionMatrix();},{passive:false});
+canvas.addEventListener('wheel',e=>{if(overview||!ready||journey)return;e.preventDefault();navDirty=true;viewDirty=true;camera.fov=THREE.MathUtils.clamp(camera.fov+e.deltaY*.025,38,90);camera.updateProjectionMatrix();},{passive:false});
 
 document.querySelectorAll('[data-toggle]').forEach(b=>b.addEventListener('click',()=>toggleDoor(b.dataset.toggle)));
 document.querySelectorAll('[data-focus]').forEach(b=>b.addEventListener('click',()=>goDoor(b.dataset.focus)));
@@ -151,7 +203,14 @@ $('#closePano').onclick=()=>{$('#panoOverlay').hidden=true;if(!modelStarted)show
 $('#mobileMenu').onclick=()=>document.body.classList.toggle('menu-open');
 window.addEventListener('keydown',e=>{if(e.key==='Escape'){$('#panoOverlay').hidden=true;document.body.classList.remove('menu-open');}});
 
+function showSample(name){
+ const master=name==='master';$('#sampleTitle').textContent=master?'主卧 · 布艺与窗光':'餐厅 · 样板对比';
+ $('#masterFigure').hidden=!master;$('#comparisonFigure').hidden=master;$('.compareControls').hidden=master;$('.compareNote').hidden=master;
+ document.querySelectorAll('[data-sample]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sample===name)));
+}
+document.querySelectorAll('[data-sample]').forEach(b=>b.onclick=()=>showSample(b.dataset.sample));
 function showPhoto(){
+ showSample('dining');
  document.querySelector('#photoAfter').src=window.PHOTO_AFTER;
  document.querySelector('#photoBefore').src=window.PHOTO_BEFORE;
  document.querySelector('#photoOverlay').hidden=false;
@@ -190,7 +249,7 @@ function traverseDoor(id){
  const targetCamera=camera.clone();targetCamera.position.copy(points.at(-1));targetCamera.lookAt(new THREE.Vector3(...step.target));
  const curve=new THREE.CatmullRomCurve3(points,false,'centripetal');
  journey={curve,elapsed:0,duration:matchMedia('(prefers-reduced-motion: reduce)').matches ? .2 : Math.min(1.8,Math.max(1.1,curve.getLength()/.95)),startRotation:camera.quaternion.clone(),endRotation:targetCamera.quaternion.clone(),end:step.points.at(-1),target:step.target,destination:step.destination,label:step.label};
- drag=null;navDirty=true;updateButtons();syncBackButton();message('正在'+step.label+'…');$('#viewTitle').textContent='前往'+step.name;$('#hint').textContent='正在穿过门口';
+ drag=null;navDirty=true;viewDirty=true;updateButtons();syncBackButton();message('正在'+step.label+'…');$('#viewTitle').textContent='前往'+step.name;$('#hint').textContent='正在穿过门口';
  for(const portal of portals.values())portal.hidden=true;
 }
 const navRay=new THREE.Raycaster();

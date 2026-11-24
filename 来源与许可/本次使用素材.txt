@@ -2,3 +2,7 @@ Poly Haven CC0：现代餐椅 dining_chair_02、现代玻璃吊灯 modern_ceilin
 Sweet Home BlendSwap CC0：床与床品基础模型。
 新增织物材质 Fabric082A / Fabric036 为 ambientCG CC0。其余原户型基础模型沿用v2；原始版权与许可保留在本包的“原户型基础模型”子目录。
 全景查看器 Pannellum 2.5.7，许可随包保留。
+
+v6：新增床品、搭毯、软包床头和窗帘为本项目在原户型位置制作；床垫仍为1.8×2m和1.35×2m。网页环境反射使用 Poly Haven CC0 studio_small_09；原生效果图使用 autumn_field_puresky。织物继续使用 ambientCG CC0 Fabric082A/Fabric036。
+
+淋浴区花洒、控制阀、固定座、喷嘴和软管为本项目制作的展示组件，使用已有金属和橡胶材质。
