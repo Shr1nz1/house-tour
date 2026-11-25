@@ -128,6 +128,7 @@ function init(){
  for(const [id,x,y,z,power]of [['master',1.7,2.45,5.3,17],['second',5.3,2.45,3.4,17],['dining',5.65,2.20,6.5,19],['kitchen',5.5,2.45,9,17],['bath',2.6,2.45,9,12],['entry',4,2.45,8.6,9],['balcony',5,2.45,.7,8]]){
   const light=new THREE.SpotLight(0xffedda,power,5,1.35,.95,2);light.position.set(x,y,z);light.target.position.set(x,0,z);scene.add(light,light.target);
  }
+ const bedside=new THREE.PointLight(0xffe6bb,1.8,1.3,2);bedside.position.set(.61,.69,3.98);scene.add(bedside);
  composer=new EffectComposer(renderer);composer.addPass(new RenderPass(scene,camera));
  contactAO=new InteriorContactPass(scene,camera,512,512);contactAO.blendIntensity=.85;
  contactAO.updateGtaoMaterial({radius:.24,distanceExponent:1,thickness:.11,distanceFallOff:1,scale:1,samples:16});
@@ -139,7 +140,7 @@ function init(){
  new ResizeObserver(sizeView).observe(canvas);
  const loader=new GLTFLoader();loader.setMeshoptDecoder(MeshoptDecoder);
  $('#loadingText').textContent='正在准备房间与可开关的门…';
- loader.load('./assets/apartment-doors-v6.glb',gltf=>{
+ loader.load('./assets/apartment-doors-v7.glb',gltf=>{
   model=gltf.scene;scene.add(model);mixer=new THREE.AnimationMixer(model);
   model.traverse(o=>{
    if(o.name.startsWith('Ceiling_'))ceilingParts.push(o);
@@ -198,13 +199,13 @@ document.querySelectorAll('[data-room]').forEach(b=>b.addEventListener('click',(
 $('#overview').onclick=goOverview;
 $('#openAll').onclick=()=>{for(const id in doors)setDoor(id,true);};$('#closeAll').onclick=()=>{for(const id in doors)setDoor(id,false);};
 $('#fullscreen').onclick=async()=>{try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();else await document.exitFullscreen();}catch(error){message('当前浏览器暂不支持全屏，可在系统浏览器打开。');$('#photoFull').textContent='全屏暂不可用';$('#fullscreen').textContent='全屏暂不可用';}};
-$('#panorama').onclick=()=>{const overlay=$('#panoOverlay');overlay.hidden=false;const frame=$('#panoFrame');if(!frame.getAttribute('src'))frame.src='./tour.html';};
+$('#panorama').onclick=()=>{const overlay=$('#panoOverlay');overlay.hidden=false;const frame=$('#panoFrame');if(!frame.getAttribute('src'))frame.src='./tour.html?v=7';};
 $('#closePano').onclick=()=>{$('#panoOverlay').hidden=true;if(!modelStarted)showPhoto();};
 $('#mobileMenu').onclick=()=>document.body.classList.toggle('menu-open');
 window.addEventListener('keydown',e=>{if(e.key==='Escape'){$('#panoOverlay').hidden=true;document.body.classList.remove('menu-open');}});
 
 function showSample(name){
- const master=name==='master';$('#sampleTitle').textContent=master?'主卧 · 布艺与窗光':'餐厅 · 样板对比';
+ const master=name==='master';$('#sampleTitle').textContent=master?'主卧 · 软装与窗光':'餐厅 · 样板对比';
  $('#masterFigure').hidden=!master;$('#comparisonFigure').hidden=master;$('.compareControls').hidden=master;$('.compareNote').hidden=master;
  document.querySelectorAll('[data-sample]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sample===name)));
 }
