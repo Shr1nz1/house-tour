@@ -10,6 +10,7 @@ import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
 import {GTAOPass} from 'three/addons/postprocessing/GTAOPass.js';
 import {ShaderPass} from 'three/addons/postprocessing/ShaderPass.js';
 import {FXAAShader} from 'three/addons/shaders/FXAAShader.js';
+import {SMAAPass} from 'three/addons/postprocessing/SMAAPass.js';
 import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
 const $=s=>document.querySelector(s), canvas=$('#view');
@@ -22,14 +23,14 @@ const rooms={
  dining:{name:'餐厅',pos:[4.64,1.48,7.18],target:[5.65,1.18,6.37]},
  master:{name:'主卧',pos:[2.80,1.48,6.50],target:[1.25,1.0,5.42]},
  second:{name:'次卧',pos:[4.48,1.48,2.13],target:[5.65,1.0,3.80]},
- kitchen:{name:'厨房',pos:[5.20,1.48,8.78],target:[5.55,1.22,9.90]},
+ kitchen:{name:'厨房',pos:[4.92,1.48,8.20],target:[5.59,1.32,8.94]},
  bath:{name:'卫生间',pos:[2.91,1.38,8.92],target:[2.62,1.20,9.72]},
  balcony:{name:'阳台',pos:[5.03,1.43,.76],target:[6.45,1.13,.72]},
  entry:{name:'玄关',pos:[3.87,1.48,9.05],target:[3.86,1.20,7.38]}
 };
 let renderer,scene,camera,controls,model,mixer,ready=false,overview=false,yaw=0,pitch=0,drag=null,moving=null,focusDoor='Door_Master';
 const doors={},raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();let previousTime=performance.now();
-let ceilingParts=[],hits=[],composer,contactAO,fxaa,quality='detail';
+let ceilingParts=[],hits=[],composer,contactAO,fxaa,smaa,quality='detail';
 // Transparent glazing and sheer fabric must not become opaque AO occluders.
 class InteriorContactPass extends GTAOPass{
  _overrideVisibility(){
@@ -45,18 +46,31 @@ class InteriorContactPass extends GTAOPass{
 }
 function sizeView(){
  if(!renderer)return;const r=canvas.getBoundingClientRect();
- const dpr=Math.min(devicePixelRatio,quality==='detail'?1.5:1.1);
+ const dpr=Math.min(devicePixelRatio,quality==='detail'?2:1.1);
  renderer.setPixelRatio(dpr);renderer.setSize(r.width,r.height,false);
  camera.aspect=r.width/r.height;camera.updateProjectionMatrix();
  composer.setPixelRatio(dpr);composer.setSize(r.width,r.height);
- contactAO.setSize(Math.max(1,Math.round(r.width*dpr*.7)),Math.max(1,Math.round(r.height*dpr*.7)));
+ const aoScale=quality==='detail'?1:.7;
+ contactAO.setSize(Math.max(1,Math.round(r.width*dpr*aoScale)),Math.max(1,Math.round(r.height*dpr*aoScale)));
  fxaa.material.uniforms.resolution.value.set(1/(r.width*dpr),1/(r.height*dpr));
  navDirty=true;viewDirty=true;
 }
 function chooseQuality(value){
  quality=value;contactAO.enabled=value==='detail';
+ // MSAA preserves fine fabric and wood detail without a second softening filter.
+ const samples=value==='detail'?Math.min(4,renderer.capabilities.maxSamples):0;
+ for(const target of [composer.renderTarget1,composer.renderTarget2]){
+  if(target.samples!==samples){target.samples=samples;target.dispose();}
+ }
+ fxaa.enabled=value==='smooth';
+ smaa.enabled=value==='detail';
+ scene.traverse(light=>{
+  if(!light.isLight||!light.castShadow)return;
+  const size=value==='detail'?4096:2048;
+  if(light.shadow.mapSize.x!==size){light.shadow.mapSize.set(size,size);light.shadow.map?.dispose();light.shadow.map=null;}
+ });
  for(const b of document.querySelectorAll('[data-quality]'))b.setAttribute('aria-pressed',String(b.dataset.quality===value));
- $('#qualityNote').textContent=value==='detail'?'细腻阴影与材质层次':'优先保持操作流畅';
+ $('#qualityNote').textContent=value==='detail'?'高清纹理、精细边缘与柔和阴影':'优先保持操作流畅';
  try{localStorage.setItem('house-quality-v6',value);}catch{}
  sizeView();if(renderer)renderer.shadowMap.needsUpdate=true;
 }
@@ -133,19 +147,19 @@ function init(){
  contactAO=new InteriorContactPass(scene,camera,512,512);contactAO.blendIntensity=.85;
  contactAO.updateGtaoMaterial({radius:.24,distanceExponent:1,thickness:.11,distanceFallOff:1,scale:1,samples:16});
  contactAO.updatePdMaterial({samples:8,radius:6,rings:2,lumaPhi:10,depthPhi:2,normalPhi:4});composer.addPass(contactAO);
- fxaa=new ShaderPass(FXAAShader);composer.addPass(fxaa);composer.addPass(new OutputPass());
+ fxaa=new ShaderPass(FXAAShader);composer.addPass(fxaa);smaa=new SMAAPass();composer.addPass(smaa);composer.addPass(new OutputPass());
  let initialQuality=matchMedia('(pointer:coarse)').matches?'smooth':'detail';try{initialQuality=localStorage.getItem('house-quality-v6')||initialQuality;}catch{}
  chooseQuality(initialQuality==='smooth'?'smooth':'detail');
  document.querySelectorAll('[data-quality]').forEach(b=>b.onclick=()=>chooseQuality(b.dataset.quality));
  new ResizeObserver(sizeView).observe(canvas);
  const loader=new GLTFLoader();loader.setMeshoptDecoder(MeshoptDecoder);
  $('#loadingText').textContent='正在准备房间与可开关的门…';
- loader.load('./assets/apartment-doors-v7.glb',gltf=>{
+ loader.load('./assets/apartment-doors-v8.glb',gltf=>{
   model=gltf.scene;scene.add(model);mixer=new THREE.AnimationMixer(model);
   model.traverse(o=>{
    if(o.name.startsWith('Ceiling_'))ceilingParts.push(o);
    if(o.isMesh){o.castShadow=true;o.receiveShadow=true;hits.push(o);for(const m of Array.isArray(o.material)?o.material:[o.material]){
-    if(m.map)m.map.anisotropy=renderer.capabilities.getMaxAnisotropy();
+    for(const map of [m.map,m.normalMap,m.roughnessMap,m.metalnessMap])if(map)map.anisotropy=renderer.capabilities.getMaxAnisotropy();
     if(m.emissiveIntensity>2)m.emissiveIntensity=2;
     if(m.transparent){o.castShadow=false;m.depthWrite=false;}
    }}
@@ -199,14 +213,18 @@ document.querySelectorAll('[data-room]').forEach(b=>b.addEventListener('click',(
 $('#overview').onclick=goOverview;
 $('#openAll').onclick=()=>{for(const id in doors)setDoor(id,true);};$('#closeAll').onclick=()=>{for(const id in doors)setDoor(id,false);};
 $('#fullscreen').onclick=async()=>{try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();else await document.exitFullscreen();}catch(error){message('当前浏览器暂不支持全屏，可在系统浏览器打开。');$('#photoFull').textContent='全屏暂不可用';$('#fullscreen').textContent='全屏暂不可用';}};
-$('#panorama').onclick=()=>{const overlay=$('#panoOverlay');overlay.hidden=false;const frame=$('#panoFrame');if(!frame.getAttribute('src'))frame.src='./tour.html?v=7';};
+$('#panorama').onclick=()=>{const overlay=$('#panoOverlay');overlay.hidden=false;const frame=$('#panoFrame');if(!frame.getAttribute('src'))frame.src='./tour.html?v=8';};
 $('#closePano').onclick=()=>{$('#panoOverlay').hidden=true;if(!modelStarted)showPhoto();};
 $('#mobileMenu').onclick=()=>document.body.classList.toggle('menu-open');
 window.addEventListener('keydown',e=>{if(e.key==='Escape'){$('#panoOverlay').hidden=true;document.body.classList.remove('menu-open');}});
 
 function showSample(name){
- const master=name==='master';$('#sampleTitle').textContent=master?'主卧 · 软装与窗光':'餐厅 · 样板对比';
- $('#masterFigure').hidden=!master;$('#comparisonFigure').hidden=master;$('.compareControls').hidden=master;$('.compareNote').hidden=master;
+ const comparison=name==='dining';
+ const titles={dining:'餐厅 · 高清细节对比',master:'主卧 · 布艺与窗光',kitchen:'厨房 · 台面与五金'};
+ $('#sampleTitle').textContent=titles[name]||titles.dining;
+ document.querySelectorAll('[data-photo-room]').forEach(figure=>figure.hidden=figure.dataset.photoRoom!==name);
+ $('#comparisonFigure').hidden=!comparison;$('.compareControls').hidden=!comparison;$('.compareNote').hidden=!comparison;
+ $('#photoOriginal').href='./assets/'+name+'-v8-4k.jpg';
  document.querySelectorAll('[data-sample]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sample===name)));
 }
 document.querySelectorAll('[data-sample]').forEach(b=>b.onclick=()=>showSample(b.dataset.sample));

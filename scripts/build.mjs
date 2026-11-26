@@ -7,9 +7,9 @@ const root=path.resolve(import.meta.dirname,'..');
 const output=await build({entryPoints:[path.join(root,'src/app.js')],bundle:true,format:'iife',target:['chrome110','safari17'],minify:true,write:false,legalComments:'eof'});
 const bundle=output.outputFiles[0].contents;
 const name='app.'+crypto.createHash('sha256').update(bundle).digest('hex').slice(0,12)+'.js';
-for(const entry of await fs.readdir(path.join(root,'assets'))){
-  if(entry==='app.js'||/^app\.[a-f0-9]+\.js$/.test(entry))await fs.unlink(path.join(root,'assets',entry));
-}
+// Previously published HTML can remain in a visitor's cache during an update.
+// Its immutable, hashed bundle must stay available after the new release.
+await fs.rm(path.join(root,'assets','app.js'),{force:true});
 await fs.writeFile(path.join(root,'assets',name),bundle);
 for(const file of ['index.html','tour.html','catalog.html','credits.html']){
   let html=await fs.readFile(path.join(root,'src',file),'utf8');
